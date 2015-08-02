@@ -15,7 +15,7 @@ cols <- floor(all.cols / every)
 
 if (!exists("train.data")) {
     max.rows <- 10000
-    gunzip("train.csv.gz", overwrite=TRUE)
+    gunzip("train.csv.gz", overwrite=TRUE, remove = FALSE)
     train.data <- read.csv("train.csv",
                            header = TRUE,
                            nrows=max.rows)
@@ -73,7 +73,7 @@ printf("%03.1f%% correct", 100 * num.correct / NROW(test.batch))
 
 # Now run our model against the competition data
 if (!exists("competition.data")) {
-    gunzip("test.csv.gz", overwrite=TRUE)
+    gunzip("test.csv.gz", overwrite=TRUE, remove = FALSE)
     competition.data <- read.csv("test.csv", header = TRUE)
     unlink("test.csv")
 }
