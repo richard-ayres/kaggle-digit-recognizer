@@ -15,10 +15,12 @@ cols <- floor(all.cols / every)
 
 if (!exists("train.data")) {
     max.rows <- 10000
+    gunzip("train.csv.gz", overwrite=TRUE)
     train.data <- read.csv("train.csv",
                            header = TRUE,
                            nrows=max.rows)
     train.data$label <- as.factor(train.data$label)
+    unlink("train.csv")
 }
 
 # convert training data into list of labels with a corresponding matrix
@@ -70,7 +72,12 @@ num.correct <- NROW(which(test.batch$label == test.batch$prediction))
 printf("%03.1f%% correct", 100 * num.correct / NROW(test.batch))
 
 # Now run our model against the competition data
-competition.data <- read.csv("test.csv", header = TRUE)
+if (!exists("competition.data")) {
+    gunzip("test.csv.gz", overwrite=TRUE)
+    competition.data <- read.csv("test.csv", header = TRUE)
+    unlink("test.csv")
+}
+
 predictions <- predict(object = m, newdata = competition.data, type = "class")
 
 output <- data.frame(ImageId=1:nrow(competition.data), Label = predictions)
