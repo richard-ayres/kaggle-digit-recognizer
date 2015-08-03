@@ -15,7 +15,27 @@ rows <- floor(all.rows / every)
 cols <- floor(all.cols / every)
 
 featureEngineering <- function (df) {
+    
+    cell.count <- all.rows * all.cols
+    figure.columns <- seq(2, (1+cell.count))
+    
+    # Log and scale the figures
+    df <- adply(df, .margins=1, function(row) {
+        # Take the log(1+x)
+        row[1, figure.columns] <- log1p(row[1, figure.columns])
+        
+        # All values
+        values <- unlist(row[1, figure.columns])
+        location <- mean(values)
+        range <- sd(values)
+        
+        row[1, figure.columns] <- (row[1, figure.columns] - location) / range
+        
+        return(row)
+    })
+    
     if (every > 1) {
+        # cut cells down
         row.cells <- seq(1, all.rows, by = every)
         col.cells <- seq(1, all.cols, by = every)
         
