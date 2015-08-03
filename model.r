@@ -14,6 +14,18 @@ every <- 4
 rows <- floor(all.rows / every)
 cols <- floor(all.cols / every)
 
+# convert training data into list of labels with a corresponding matrix
+get.list <- function(df = train.data) {
+    l <- alply(.data = df, .margins = 1, .fun = function (row) {
+        r <- list()
+        r$label <- row$label
+        r$figure <- matrix(row[1, seq(2, all.rows*all.cols+1)], all.rows, all.cols)
+        
+        return(r)
+    })
+    return(l)
+}
+
 featureEngineering <- function (df) {
     
     cell.count <- all.rows * all.cols
@@ -67,22 +79,6 @@ if (!exists("source.data")) {
 train.data <- source.data
 train.data <- featureEngineering(train.data)
 
-# convert training data into list of labels with a corresponding matrix
-get.list <- function(df = train.data) {
-    l <- alply(.data = df, .margins = 1, .fun = function (row) {
-        r <- list()
-        r$label <- row$label
-        r$figure <- matrix(lapply(row[1, all.rows*all.cols+1], function(v) v/255), all.rows, all.cols)
-        
-        return(r)
-    })
-    return(l)
-}
-
-figure.columns <- seq(2, (1+rows*cols))
-
-train.data[, figure.columns] <- train.data[, figure.columns] / 255
-
 partition <- createDataPartition(train.data[, "label"], p = 0.8, list = FALSE)
 train.batch <- train.data[partition,]
 test.batch <- train.data[-partition,]
@@ -96,7 +92,6 @@ m <- nnet(formula = label ~ .,
 print(Sys.time() - start.time)
 
 test.batch$prediction <- predict(object = m, newdata = test.batch, type="class")
-r <- test.batch[, c("label", "prediction")]
 
 num.correct <- NROW(which(test.batch$label == test.batch$prediction))
 ratio <- num.correct / NROW(test.batch)
