@@ -16,35 +16,20 @@ cols <- floor(all.cols / every)
 
 # convert training data into list of labels with a corresponding matrix
 get.list <- function(df = train.data) {
+    rows <- sqrt(NCOL(df) - 1)
+    cols <- rows
+    
     l <- alply(.data = df, .margins = 1, .fun = function (row) {
         r <- list()
         r$label <- row$label
-        r$figure <- matrix(row[1, seq(2, all.rows*all.cols+1)], all.rows, all.cols)
+        r$figure <- matrix(row[1, seq(2, rows*cols+1)], rows, cols)
         
         return(r)
     })
     return(l)
 }
 
-featureEngineering <- function (df) {
-    
-    cell.count <- all.rows * all.cols
-    figure.columns <- seq(2, (1+cell.count))
-    
-    # Log and scale the figures
-    df <- adply(df, .margins=1, function(row) {
-        # Take the log(1+x)
-        row[1, figure.columns] <- log1p(row[1, figure.columns])
-        
-        # All values
-        values <- unlist(row[1, figure.columns])
-        location <- mean(values)
-        range <- sd(values)
-        
-        row[1, figure.columns] <- (row[1, figure.columns] - location) / range
-        
-        return(row)
-    })
+featureEngineering <- function (df, take.log = TRUE, scale = TRUE) {
     
     if (every > 1) {
         # cut cells down
@@ -55,14 +40,48 @@ featureEngineering <- function (df) {
         foreach(rc = row.cells) %do% {
             columns <- c(columns, c(col.cells + (((rc[1]-1) * all.cols))))
         }
-        columns <- columns + 1  # Skip "label" column
             
+        # cells in a block
+        block.size <- every*every
+        my.cells <- c()
+        foreach (y=0:(every-1)) %do%{ 
+            my.cells <- c(my.cells, (1:every) + y*all.cols)
+        }
+        my.cells <- my.cells-1
+                
         df <- do.call(rbind, alply(df, .margins = 1, function (row) {
-            cell.data <- as.list(row[1, columns])
+            
+            foreach(cell = (columns+1)) %do% {
+                avg <- sum(row[1, my.cells+cell]) / block.size
+                row[1, cell] <- avg
+            }
+            
+            cell.data <- as.list(row[1, columns+1])
             
             return(data.frame(label = row$label, cell.data))
         }))
     }
+    
+    figure.columns <- seq(2, NCOL(df))
+    
+    # Log and scale the figures
+    df <- adply(df, .margins=1, function(row) {
+        # Take the log(1+x)
+        if (take.log) {
+            row[1, figure.columns] <- log1p(row[1, figure.columns])
+        }
+        
+        if (scale) {
+            # All values
+            values <- unlist(row[1, figure.columns])
+            location <- 0 #mean(values)
+            range <- sd(values)
+            
+            row[1, figure.columns] <- (row[1, figure.columns] - location) / range
+        }
+        
+        return(row)
+    })
     
     return(df)
 }
@@ -77,12 +96,17 @@ if (!exists("source.data")) {
     unlink("train.csv")
 }
 train.data <- source.data
-train.data <- featureEngineering(train.data)
+
+print("Massaging data...")
+start.time <- Sys.time()
+train.data <- featureEngineering(train.data, take.log = TRUE, scale = TRUE)
+print(Sys.time() - start.time)
 
 partition <- createDataPartition(train.data[, "label"], p = 0.8, list = FALSE)
 train.batch <- train.data[partition,]
 test.batch <- train.data[-partition,]
 
+print("Training neurons...")
 start.time <- Sys.time()
 m <- nnet(formula = label ~ .,
           data = train.batch,
@@ -95,6 +119,7 @@ test.batch$prediction <- predict(object = m, newdata = test.batch, type="class")
 
 num.correct <- NROW(which(test.batch$label == test.batch$prediction))
 ratio <- num.correct / NROW(test.batch)
+printf("Ratio: %.3f\n", ratio)
 
 stop()
 
