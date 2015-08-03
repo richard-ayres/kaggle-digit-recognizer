@@ -108,6 +108,13 @@ if (ratio > bestRatio) {
     write.table(output, file=fname, sep = ",", quote = FALSE, row.names = FALSE, col.names = TRUE)
     gzip(fname, overwrite = TRUE)
     
+    # Commit to github repository
+    git <- "c:\\cygwin64\\bin\\git.exe"
+    system(paste(git, "add", "-u"))
+    system(paste(git, "commit", "--allow-empty", "-m", paste0("'submission [ratio=", round(ratio, 3), "]'")))
+    system(paste(git, "tag", paste0("submission-", round(ratio,3))))
+    system(paste(git, "push"))
+    
     bestRatio <- ratio
     save(bestRatio, file="bestRatio.RData")
     
