@@ -112,7 +112,7 @@ m <- nnet(formula = label ~ .,
           data = train.batch,
           MaxNWts = 100000,
           maxit = 1000,
-          size = floor(1.5*rows*cols/rows))
+          size = floor(rows*cols/2)) #floor(1.5*rows*cols/rows))
 print(Sys.time() - start.time)
 
 test.batch$prediction <- predict(object = m, newdata = test.batch, type="class")
