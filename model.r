@@ -111,7 +111,7 @@ start.time <- Sys.time()
 m <- nnet(formula = label ~ .,
           data = train.batch,
           MaxNWts = 100000,
-          maxit = 400,
+          maxit = 1000,
           size = floor(1.5*rows*cols/rows))
 print(Sys.time() - start.time)
 
