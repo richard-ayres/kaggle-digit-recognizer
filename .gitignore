@@ -4,3 +4,5 @@ output/
 .Rhistory
 *.Rproj
 *.RData
+test.csv.gz
+train.csv.gz

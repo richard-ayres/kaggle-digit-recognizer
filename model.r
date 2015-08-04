@@ -3,49 +3,42 @@ library(nnet)
 library(caret)
 library(R.utils)
 library(foreach)
+library(functional)
+library(parallel)
+library(doParallel)
 
 set.seed(12345)
 
-# rows and columns for each figure
-all.rows <- 28
-all.cols <- 28
-
-every <- 4
-rows <- floor(all.rows / every)
-cols <- floor(all.cols / every)
-
-# convert training data into list of labels with a corresponding matrix
-get.list <- function(df = train.data) {
-    rows <- sqrt(NCOL(df) - 1)
-    cols <- rows
+num.cores <- detectCores(logical = FALSE)
+if (num.cores > 1) {
+    cl <- makeCluster(num.cores)
+    registerDoParallel(cl)
     
-    l <- alply(.data = df, .margins = 1, .fun = function (row) {
-        r <- list()
-        r$label <- row$label
-        r$figure <- matrix(row[1, seq(2, rows*cols+1)], rows, cols)
-        
-        return(r)
-    })
-    return(l)
+    my.llply <- Curry(llply, .parallel=TRUE, .paropts = list(.packages = c("foreach"), .export = c("cutFigure")))
+    my.alply <- Curry(alply, .parallel=TRUE, .paropts = list(.packages = c("foreach"), .export = c("cutFigure")))
+} else {
+    my.llply <- llply
+    my.alply <- alply
 }
 
-
 reshapeData <- function (df) {
-    # Return a list containing a vector of labels
-    figures =  alply(df, .margins = 1, function (row) { return(unlist(row[1, seq(2, NCOL(row))])) })
-    
     if (!is.null(df$label)) {
+        figures = my.alply(df[, 2:NCOL(df)], .margins = 1, function (row) unlist(row[1, ]))
         return(list(labels = df$label, figures = figures))
     } else {
+        figures = my.alply(df[, 1:NCOL(df)], .margins = 1, function (row) unlist(row[1, ]))
         return(list(figures = figures))
     }
 }
 
-cutFigure <- function (figure, .every = every) {
+cutFigure <- function (figure, .every = 1) {
     # "figure" is a vector of pixel values
     if (.every <= 1) {
         return(figure)
     }
+    
+    all.rows <- sqrt(NROW(figure))
+    all.cols <- all.rows
     
     # cut cells down
     row.cells <- seq(1, all.rows, by = .every)
@@ -109,44 +102,29 @@ backToDataFrame <- function (l) {
     return(df)
 }
 
-featureEngineering <- function (df, do.scale = TRUE) {
+featureEngineering <- function (df, cut.by, do.scale = TRUE) {
     dl <- reshapeData(df)
-    dl$figures <- lapply(dl$figures, cutFigure)
-    if (do.scale) {
-        dl$figures <- lapply(dl$figures, featureScale)
-    }
+    
+    dl$figures <- my.llply(dl$figures, if(cut.by > 1) Curry(cutFigure, .every = cut.by) else Identity)
+    dl$figures <- my.llply(dl$figures, if(do.scale) featureScale else Identity)
+
     df <- backToDataFrame(dl)
     return(df)
 }
 
 if (!exists("source.data")) {
-    max.rows <- 10000
+#     num.rows <- 500
     
-    gunzip("train.csv.gz", overwrite=TRUE, remove = FALSE)
-    
-    colClasses <- c("character", rep("double", all.cols*all.rows))
-    source.data <- (read.csv("train.csv", 
-                             header = TRUE, 
-                             colClasses=colClasses, 
-                             col.names = c("label", paste0("pixel", seq(0, (all.rows*all.cols)-1))),
-                             nrows=min(max.rows, 500)))
-    while(NROW(source.data) < max.rows) {
-        new.set <- (read.csv("train.csv", header = FALSE, colClasses=colClasses,
-                                       skip=1+NROW(source.data), 
-                                       nrows=500,
-                                       col.names=names(source.data)))
-        source.data <- rbind(source.data, new.set)
+    load("train.RData")
+    if (exists("num.rows") && num.rows > 0) {
+        train.data <- train.data[sample(NROW(train.data), num.rows), ]
     }
-    unlink("train.csv")
-    rm(new.set)
-    
 }
-train.data <- source.data
 
 # Takes 10 minutes to massage 10,000 figures into 7x7
 print("Massaging data...")
 start.time <- Sys.time()
-train.data <- featureEngineering(train.data)
+train.data <- featureEngineering(train.data, cut.by = 2)
 print(Sys.time() - start.time)
 
 partition <- createDataPartition(train.data[, "label"], p = 0.8, list = FALSE)
@@ -158,15 +136,14 @@ stop()  # Convenient time to save image?
 
 print("Training neurons...")
 start.time <- Sys.time()
-m <- nnet(formula = label ~ .,
-          data = train.batch,
-          MaxNWts = 100000,
-          maxit = 1000,
-          size = 100)
-#          size = min(50, floor(rows*cols/2) * max(1, NROW(train.batch)/4000))) #floor(1.5*rows*cols/rows))
+model.nnet <- nnet(formula = label ~ .,
+                   data = train.batch,
+                   MaxNWts = (NCOL(train.batch) * 125),
+                   maxit = 400,
+                   size = floor(NCOL(train.batch)/2))
 print(Sys.time() - start.time)
 
-test.batch$prediction <- predict(object = m, newdata = test.batch, type="class")
+test.batch$prediction <- predict(object = model.nnet, newdata = test.batch, type="class")
 
 num.correct <- NROW(which(test.batch$label == test.batch$prediction))
 ratio <- num.correct / NROW(test.batch)
@@ -184,18 +161,15 @@ if (ratio > bestRatio) {
     printf("Best yet: %.3f\n",  ratio)
     
     # Now run our model against the competition data
-    if (!exists("test.data")) {
-        gunzip("test.csv.gz", overwrite=TRUE, remove = FALSE)
-        test.data <- read.csv("test.csv", header = TRUE)
-        unlink("test.csv")
-        
-        start.time <- Sys.time()
-        print(start.time)
-        test.data <- featureEngineering(test.data)
-        print(Sys.time() - start.time)
-    }
+#     if (!exists("test.data")) {
+#         load("test.RData")
+# 
+#         start.time <- Sys.time()
+#         test.data <- featureEngineering(test.data, cut.by = 2)
+#         print(Sys.time() - start.time)
+#     }
     
-    test.data$Label <- predict(object = m, newdata = test.data, type = "class")
+    test.data$Label <- predict(object = model.nnet, newdata = test.data, type = "class")
     test.data$ImageId <- 1:nrow(test.data)
     
     suffix <- paste(sep="-", format(Sys.time(), "%Y%m%d-%H%M"), round(ratio, 3))
@@ -208,13 +182,10 @@ if (ratio > bestRatio) {
     git <- "c:\\cygwin64\\bin\\git.exe"
     system(paste(git, "add", "-u"))
     system(paste(git, "commit", "--allow-empty", "-m", paste0("'submission [ratio=", round(ratio, 3), "]'")))
-    system(paste(git, "tag", paste0("submission-", round(ratio,3))))
-#     system(paste(git, "push"))
+    system(paste(git, "tag", "-f", paste0("submission-", round(ratio,3))))
     
     bestRatio <- ratio
     save(bestRatio, file="bestRatio.RData")
-    
-    rm(competition.data, output)    # Conserve RAM
     
 } else {
     printf("Not an improvement %.3f < %.3f\n", ratio, bestRatio)
