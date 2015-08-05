@@ -1,4 +1,4 @@
-library(plyr)
+#library(plyr) - plyr seems to have problems with parallelism
 library(nnet)
 library(caret)
 library(R.utils)
@@ -7,27 +7,45 @@ library(functional)
 library(parallel)
 library(doParallel)
 
-set.seed(12345)
+conf <- list(
+    seed = 12345,
+    num.cores = detectCores(logical = FALSE),
+    num.rows = 10000,
+    cut.by = 2,
+    do.normalise = TRUE,
+    take.log = TRUE,
+    model = "nnet"
+)
 
-num.cores <- detectCores(logical = FALSE)
-if (num.cores > 1) {
-    cl <- makeCluster(num.cores)
+set.seed(conf$seed)
+
+if (conf$num.cores > 1) {
+    cl <- makeCluster(conf$num.cores)
     registerDoParallel(cl)
-    
-    my.llply <- Curry(llply, .parallel=TRUE, .paropts = list(.packages = c("foreach"), .export = c("cutFigure")))
-    my.alply <- Curry(alply, .parallel=TRUE, .paropts = list(.packages = c("foreach"), .export = c("cutFigure")))
-} else {
-    my.llply <- llply
-    my.alply <- alply
 }
 
-reshapeData <- function (df) {
-    if (!is.null(df$label)) {
-        figures = my.alply(df[, 2:NCOL(df)], .margins = 1, function (row) unlist(row[1, ]))
-        return(list(labels = df$label, figures = figures))
+reshapeData <- function (df, .fast = TRUE) {
+    if (.fast) {
+        if (!is.null(df$label)) {
+            labels = df$label
+            
+            df <- t(df[, 2:NCOL(df)])
+            figures <- lapply(seq_len(ncol(df)), function (i) df[,i])
+            
+            return(list(labels = labels, figures = figures))
+        } else {
+            df <- t(df)
+            figures <- lapply(seq_len(ncol(df)), function (i) df[,i])
+            return(list(figures = figures))
+        }
     } else {
-        figures = my.alply(df[, 1:NCOL(df)], .margins = 1, function (row) unlist(row[1, ]))
-        return(list(figures = figures))
+        if (!is.null(df$label)) {
+            figures = my.alply(df[, 2:NCOL(df)], .margins = 1, .fun = function (row) unlist(row[1, ]))
+            return(list(labels = df$label, figures = figures))
+        } else {
+            figures = my.alply(df[, 1:NCOL(df)], .margins = 1, .fun = function (row) unlist(row[1, ]))
+            return(list(figures = figures))
+        }
     }
 }
 
@@ -46,21 +64,21 @@ cutFigure <- function (figure, .every = 1) {
     
     # "keep.columns" is the columns we will keep
     keep.columns <- c()
-    foreach(rc = row.cells) %do% {
+    for(rc in row.cells) {
         keep.columns <- c(keep.columns, c(col.cells + (((rc[1]-1) * all.cols))))
     }
         
     # cells in a block
     block.size <- .every * .every
     my.cells <- c()
-    foreach (y=0:(.every-1)) %do% { 
+    for (y in 0:(.every-1)) { 
         my.cells <- c(my.cells, (1:.every) + y*all.cols)
     }
     my.cells <- my.cells-1
             
     # Change the value in each interesting cell to the mean of 
     # itself and its neighbours that are to be removed
-    foreach(cell = keep.columns) %do% {
+    for(cell in keep.columns) {
         avg <- sum( figure[my.cells + cell] ) / block.size
         figure[cell] <- avg
     }
@@ -102,54 +120,91 @@ backToDataFrame <- function (l) {
     return(df)
 }
 
-featureEngineering <- function (df, cut.by, do.scale = TRUE) {
+featureEngineering <- function (df, cut.by = conf$cut.by, take.log = conf$take.log, do.normalise = conf$do.normalise, do.parallel = FALSE) {
     dl <- reshapeData(df)
     
-    dl$figures <- my.llply(dl$figures, if(cut.by > 1) Curry(cutFigure, .every = cut.by) else Identity)
-    dl$figures <- my.llply(dl$figures, if(do.scale) featureScale else Identity)
+    process <- Identity
+    
+    if (cut.by > 1) {
+        process <- Compose(process, Curry(cutFigure, .every = cut.by))
+    }
+    if (take.log) {
+        process <- Compose(process, log1p)
+#         process <- Compose(process, function (vec) vec/sd(vec))
+    }
+    if (do.normalise) {
+        process <- Compose(process, function (vec) vec/max(vec))
+    }
+    
+    if (do.parallel && exists("cl")) {
+        dl$figures <- foreach(i = seq_len(length(dl$figures)), .export=c("cutFigure")) %dopar% { process( dl$figures[[i]] ) }
+    } else {
+        dl$figures <- lapply(dl$figures, process)
+    }
 
     df <- backToDataFrame(dl)
     return(df)
 }
 
-if (!exists("source.data")) {
-#     num.rows <- 500
-    
+if (!exists("train.data") || NROW(train.data) != conf$num.rows) {
     load("train.RData")
-    if (exists("num.rows") && num.rows > 0) {
-        train.data <- train.data[sample(NROW(train.data), num.rows), ]
+    if (!is.null(conf$num.rows) && conf$num.rows > 0) {
+        train.data <- train.data[sample(NROW(train.data), conf$num.rows), ]
     }
+
+    # Takes 4.5 seconds to massage 10,000 figures into 7x7 (used to be 10 minutes!)
+    print("Massaging data...")
+    start.time <- Sys.time()
+    train.data <- featureEngineering(train.data)
+    print(Sys.time() - start.time)
+
+    partition <- createDataPartition(train.data[, "label"], p = 0.8, list = FALSE)
+    train.batch <- train.data[partition,]
+    test.batch <- train.data[-partition,]
 }
 
-# Takes 10 minutes to massage 10,000 figures into 7x7
-print("Massaging data...")
-start.time <- Sys.time()
-train.data <- featureEngineering(train.data, cut.by = 2)
-print(Sys.time() - start.time)
-
-partition <- createDataPartition(train.data[, "label"], p = 0.8, list = FALSE)
-train.batch <- train.data[partition,]
-test.batch <- train.data[-partition,]
-
 print("Is now a convenient time to save the image?")
-stop()  # Convenient time to save image?
+# stop()  # Convenient time to save image?
 
-print("Training neurons...")
+if (conf$model == 'nnet') {
+    my.train <- function () nnet(formula = label ~ .,
+                                 data = train.batch,
+                                 MaxNWts = (NCOL(train.batch)*125),
+                                 maxit = 400,
+                                 size = floor(NCOL(train.batch)/2),
+                                 decay = 0.001)
+    my.predict <- Curry(predict, type="class")
+    
+} else if (conf$model == 'train.nnet') {
+    my.train <- function () train(form = label ~ .,
+                                  data = train.batch,
+                                  method = "nnet",
+                                  trControl = trainControl(method="repeatedcv", repeats = 10),
+                                  tuneGrid = expand.grid(size = floor(seq(NCOL(train.batch)/5, NCOL(train.batch)/2, length.out=4)),
+                                                         decay = seq(0, 0.5, length.out = 5)))
+    my.predict <- predict
+    
+} else if (conf$model == 'train.rf') {
+    my.train <- function () train(form = label ~ .,
+                                  data = train.batch,
+                                  method = "rf",
+                                  trControl = trainControl(method="repeatedcv", repeats = 10),
+                                  tuneGrid = data.frame(.mtry = NCOL(train.batch)-1))
+    my.predict <- predict
+}
+
+print("Training....")
 start.time <- Sys.time()
-model.nnet <- nnet(formula = label ~ .,
-                   data = train.batch,
-                   MaxNWts = (NCOL(train.batch) * 125),
-                   maxit = 400,
-                   size = floor(NCOL(train.batch)/2))
+model <- my.train()
 print(Sys.time() - start.time)
 
-test.batch$prediction <- predict(object = model.nnet, newdata = test.batch, type="class")
+test.batch$prediction <- my.predict(object = model, newdata = test.batch)
 
 num.correct <- NROW(which(test.batch$label == test.batch$prediction))
 ratio <- num.correct / NROW(test.batch)
 printf("Ratio: %.3f\n", ratio)
 
-stop()
+# stop()
 
 
 tryCatch(
@@ -161,15 +216,15 @@ if (ratio > bestRatio) {
     printf("Best yet: %.3f\n",  ratio)
     
     # Now run our model against the competition data
-#     if (!exists("test.data")) {
-#         load("test.RData")
-# 
-#         start.time <- Sys.time()
-#         test.data <- featureEngineering(test.data, cut.by = 2)
-#         print(Sys.time() - start.time)
-#     }
+    if (!exists("test.data")) {
+        load("test.RData")
+
+        start.time <- Sys.time()
+        test.data <- featureEngineering(test.data)
+        print(Sys.time() - start.time)
+    }
     
-    test.data$Label <- predict(object = model.nnet, newdata = test.data, type = "class")
+    test.data$Label <- my.predict(object = model, newdata = test.data)
     test.data$ImageId <- 1:nrow(test.data)
     
     suffix <- paste(sep="-", format(Sys.time(), "%Y%m%d-%H%M"), round(ratio, 3))
@@ -189,4 +244,8 @@ if (ratio > bestRatio) {
     
 } else {
     printf("Not an improvement %.3f < %.3f\n", ratio, bestRatio)
+}
+
+if (exists("cl")) {
+    stopCluster(cl)
 }
