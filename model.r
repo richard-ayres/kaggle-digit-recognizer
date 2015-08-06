@@ -11,7 +11,7 @@ conf <- list(
     seed = 12345,
     num.cores = detectCores(logical = FALSE),
     num.rows = 10000,
-    cut.by = 2,
+    cut.pixels = 2,
     do.normalise = TRUE,
     take.log = TRUE,
     model = "nnet"
@@ -24,28 +24,18 @@ if (conf$num.cores > 1) {
     registerDoParallel(cl)
 }
 
-reshapeData <- function (df, .fast = TRUE) {
-    if (.fast) {
-        if (!is.null(df$label)) {
-            labels = df$label
-            
-            df <- t(df[, 2:NCOL(df)])
-            figures <- lapply(seq_len(ncol(df)), function (i) df[,i])
-            
-            return(list(labels = labels, figures = figures))
-        } else {
-            df <- t(df)
-            figures <- lapply(seq_len(ncol(df)), function (i) df[,i])
-            return(list(figures = figures))
-        }
+reshapeData <- function (df) {
+    if (!is.null(df$label)) {
+        labels = df$label
+        
+        df <- t(df[, -1])
+        figures <- lapply(seq_len(ncol(df)), function (i) df[,i])
+        
+        return(list(labels = labels, figures = figures))
     } else {
-        if (!is.null(df$label)) {
-            figures = my.alply(df[, 2:NCOL(df)], .margins = 1, .fun = function (row) unlist(row[1, ]))
-            return(list(labels = df$label, figures = figures))
-        } else {
-            figures = my.alply(df[, 1:NCOL(df)], .margins = 1, .fun = function (row) unlist(row[1, ]))
-            return(list(figures = figures))
-        }
+        df <- t(df)
+        figures <- lapply(seq_len(ncol(df)), function (i) df[,i])
+        return(list(figures = figures))
     }
 }
 
@@ -89,19 +79,6 @@ cutFigure <- function (figure, .every = 1) {
     return(figure)
 }
 
-featureScale <- function (figure) {
-    # Take the log(1+x)
-    figure <- log1p(figure)
-    
-    # All values
-    location <- 0 #mean(figure)
-    range <- sd(figure)
-    
-    figure <- (figure - location) / range
-    
-    return(figure)
-}
-
 backToDataFrame <- function (l) {
     figures <- as.numeric(unlist(l$figures))
     dim(figures) <- c(NROW(l$figures[[1]]), NROW(l$figures))
@@ -120,7 +97,7 @@ backToDataFrame <- function (l) {
     return(df)
 }
 
-featureEngineering <- function (df, cut.by = conf$cut.by, take.log = conf$take.log, do.normalise = conf$do.normalise, do.parallel = FALSE) {
+featureEngineering <- function (df, cut.by = conf$cut.pixels, take.log = conf$take.log, do.normalise = conf$do.normalise, do.parallel = FALSE) {
     dl <- reshapeData(df)
     
     process <- Identity
@@ -130,7 +107,6 @@ featureEngineering <- function (df, cut.by = conf$cut.by, take.log = conf$take.l
     }
     if (take.log) {
         process <- Compose(process, log1p)
-#         process <- Compose(process, function (vec) vec/sd(vec))
     }
     if (do.normalise) {
         process <- Compose(process, function (vec) vec/max(vec))
@@ -146,33 +122,42 @@ featureEngineering <- function (df, cut.by = conf$cut.by, take.log = conf$take.l
     return(df)
 }
 
-if (!exists("train.data") || NROW(train.data) != conf$num.rows) {
+if (!exists("train.data")) {
     load("train.RData")
-    if (!is.null(conf$num.rows) && conf$num.rows > 0) {
-        train.data <- train.data[sample(NROW(train.data), conf$num.rows), ]
-    }
 
     # Takes 4.5 seconds to massage 10,000 figures into 7x7 (used to be 10 minutes!)
     print("Massaging data...")
     start.time <- Sys.time()
     train.data <- featureEngineering(train.data)
     print(Sys.time() - start.time)
-
-    partition <- createDataPartition(train.data[, "label"], p = 0.8, list = FALSE)
-    train.batch <- train.data[partition,]
-    test.batch <- train.data[-partition,]
 }
 
-print("Is now a convenient time to save the image?")
+if (NROW(train.data) != conf$num.rows) {
+    # Cut data down to a "reasonable size"
+    partition <- createDataPartition(train.data$label, p = conf$num.rows/NROW(train.data), list = FALSE)
+    train.data <- train.data[partition, ]
+}
+
+partition <- createDataPartition(train.data$label, p = 0.8, list = FALSE)
+train.batch <- train.data[partition,]
+test.batch <- train.data[-partition,]
+
+# print("Is now a convenient time to save the image?")
 # stop()  # Convenient time to save image?
 
 if (conf$model == 'nnet') {
-    my.train <- function () nnet(formula = label ~ .,
-                                 data = train.batch,
-                                 MaxNWts = (NCOL(train.batch)*125),
-                                 maxit = 400,
-                                 size = floor(NCOL(train.batch)/2),
-                                 decay = 0.001)
+    my.train <- (function () {
+        num.pixels <- NCOL(train.batch)
+        hidden.size <- floor(min(200, (10 + num.pixels)/2))
+        return(
+            function () nnet(formula = label ~ .,
+                             data = train.batch,
+                             maxit = 300,
+                             size = hidden.size,
+                             MaxNWts = floor(1.1 * num.pixels * hidden.size),
+                             decay = 0.01 / hidden.size)
+        )
+    })()
     my.predict <- Curry(predict, type="class")
     
 } else if (conf$model == 'train.nnet') {
