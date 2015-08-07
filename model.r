@@ -1,4 +1,4 @@
-#library(plyr) - plyr seems to have problems with parallelism
+library(plyr) # - plyr seems to have problems with parallelism
 library(nnet)
 library(caret)
 library(R.utils)
@@ -24,19 +24,73 @@ if (conf$num.cores > 1) {
     registerDoParallel(cl)
 }
 
+# Reshape into a list contaning a vector of labels and a list of matrices for the figures
 reshapeData <- function (df) {
+    rv <- list()
+    
     if (!is.null(df$label)) {
-        labels = df$label
+        rv$labels = df$label
         
-        df <- t(df[, -1])
-        figures <- lapply(seq_len(ncol(df)), function (i) df[,i])
-        
-        return(list(labels = labels, figures = figures))
-    } else {
-        df <- t(df)
-        figures <- lapply(seq_len(ncol(df)), function (i) df[,i])
-        return(list(figures = figures))
+        df <- df[, -1]
     }
+    
+    rows <- sqrt(ncol(df))
+    cols <- rows
+        
+    # transpose data frame (without labels) and extract matrix
+    df <- t(df)
+    rv$figures <- lapply(seq_len(ncol(df)), function (i) {
+        figure <- df[,i]
+        dim(figure) <- c(rows, cols)
+        return(figure)
+    })
+    
+    return(rv)
+}
+
+# Move image in figures to top left of matrix
+trimFigures <- function (figures) {
+    # The number of rows and columns
+    rows <- NROW(figures[[1]])
+    cols <- NCOL(figures[[1]])
+    
+    # Determine boundaries we can trim to
+    boundaries <- ldply(figures, function (figure) {
+        # How many pixels to trim off each edge
+        top <- rows
+        left <- cols
+
+        for (y in seq_len(rows)) {
+            if (max(figure[y,]) > 0) {
+                top <- min(top, y)
+                break
+            }
+        }
+        for (x in seq_len(cols)) {
+            if (max(figure[, x]) > 0) {
+                left <- min(left, x)
+                break
+            }
+        }
+        
+        return(data.frame(top = top, left = left))
+    })
+    
+    # our boundaries
+    left <- min(boundaries$left)
+    top <- min(boundaries$top)
+    width <- cols - left
+    height <- rows - top
+    
+    # Now trim to the boundaries and pad out bottom and right with zeros
+    figures <- lapply(figures, function (figure) {
+        new.figure <- rep(0, rows*cols)
+        dim(new.figure) <- c(rows,cols)
+        new.figure[1:height, 1:width] <- figure[-(1:top), -(1:left)]
+        return(new.figure)
+    })
+    
+    return(figures)
 }
 
 cutFigure <- function (figure, .every = 1) {
@@ -79,16 +133,24 @@ cutFigure <- function (figure, .every = 1) {
     return(figure)
 }
 
-backToDataFrame <- function (l) {
-    figures <- as.numeric(unlist(l$figures))
-    dim(figures) <- c(NROW(l$figures[[1]]), NROW(l$figures))
+backToDataFrame <- function (dl) {
+    rows <- NROW(dl$figures[[1]])
+    cols <- NCOL(dl$figures[[2]])
+    
+    # Convert figures (list of matrices) into huge single vector
+    figures <- as.vector(unlist(dl$figures))
+    
+    # Change to a matrix with the columns as figures (row for each pixel)
+    dim(figures) <- c(rows * cols, NROW(dl$figures))
+    
+    # Transpose matrix so that the figures are in the rows
     figures <- t(figures)
     
-    if (is.null(l$labels)) {
+    if (is.null(dl$labels)) {
         df <- as.data.frame(figures)
         names(df) <- paste0("pixel", seq(0, NCOL(df)-1))
     } else {
-        labels <- as.numeric(l$labels)
+        labels <- as.numeric(dl$labels)
         df <- as.data.frame(cbind(labels, figures))
         names(df) <- c("label", paste0("pixel", seq(0, NCOL(df)-2)))
         df$label <- as.factor(df$label)
@@ -99,6 +161,8 @@ backToDataFrame <- function (l) {
 
 featureEngineering <- function (df, cut.by = conf$cut.pixels, take.log = conf$take.log, do.normalise = conf$do.normalise, do.parallel = FALSE) {
     dl <- reshapeData(df)
+    
+    dl$figures <- trimFigures(dl$figures)
     
     process <- Identity
     
@@ -147,12 +211,12 @@ if (conf$model == 'nnet') {
     my.train <- (function () {
         num.pixels <- NCOL(train.batch)
         hidden.size = floor(min(200, (10 + num.pixels)/2))
-        max.weights <- floor(1.2 * num.pixels * hidden.size)
+        max.weights <- floor(1.5 * num.pixels * hidden.size)
         
         return( function () nnet(
             formula = label ~ .,
             data = train.batch,
-            maxit = 1000, #400,
+            maxit = 400,
             size = hidden.size,
             MaxNWts = max.weights,
             decay = 0.01 / hidden.size,
