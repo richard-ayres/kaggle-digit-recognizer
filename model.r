@@ -10,7 +10,7 @@ library(doParallel)
 conf <- list(
     seed = 12345,
     num.cores = detectCores(logical = FALSE),
-    num.rows = 10000,
+    num.rows = 20000,
     cut.pixels = 2,
     do.normalise = TRUE,
     take.log = TRUE,
@@ -122,25 +122,23 @@ featureEngineering <- function (df, cut.by = conf$cut.pixels, take.log = conf$ta
     return(df)
 }
 
-if (!exists("train.data")) {
-    load("train.RData")
+load("train.RData")
 
-    # Takes 4.5 seconds to massage 10,000 figures into 7x7 (used to be 10 minutes!)
-    print("Massaging data...")
-    start.time <- Sys.time()
-    train.data <- featureEngineering(train.data)
-    print(Sys.time() - start.time)
-}
+# Cut data down to a "reasonable size"
+cut.partition <- createDataPartition(train.data$label, p = conf$num.rows/NROW(train.data), list = FALSE)
+train.data <- train.data[cut.partition, ]
+rm(cut.partition)
 
-if (NROW(train.data) != conf$num.rows) {
-    # Cut data down to a "reasonable size"
-    partition <- createDataPartition(train.data$label, p = conf$num.rows/NROW(train.data), list = FALSE)
-    train.data <- train.data[partition, ]
-}
+# Takes 4.5 seconds to massage 10,000 figures into 7x7 (used to be 10 minutes!)
+print("Massaging data...")
+start.time <- Sys.time()
+train.data <- featureEngineering(train.data)
+print(Sys.time() - start.time)
 
 partition <- createDataPartition(train.data$label, p = 0.8, list = FALSE)
 train.batch <- train.data[partition,]
 test.batch <- train.data[-partition,]
+rm(partition)
 
 # print("Is now a convenient time to save the image?")
 # stop()  # Convenient time to save image?
@@ -148,15 +146,18 @@ test.batch <- train.data[-partition,]
 if (conf$model == 'nnet') {
     my.train <- (function () {
         num.pixels <- NCOL(train.batch)
-        hidden.size <- floor(min(200, (10 + num.pixels)/2))
-        return(
-            function () nnet(formula = label ~ .,
-                             data = train.batch,
-                             maxit = 300,
-                             size = hidden.size,
-                             MaxNWts = floor(1.1 * num.pixels * hidden.size),
-                             decay = 0.01 / hidden.size)
-        )
+        hidden.size = floor(min(200, (10 + num.pixels)/2))
+        max.weights <- floor(1.2 * num.pixels * hidden.size)
+        
+        return( function () nnet(
+            formula = label ~ .,
+            data = train.batch,
+            maxit = 1000, #400,
+            size = hidden.size,
+            MaxNWts = max.weights,
+            decay = 0.01 / hidden.size,
+            reltol = 0.000001
+        ))
     })()
     my.predict <- Curry(predict, type="class")
     
