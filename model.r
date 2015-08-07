@@ -1,3 +1,5 @@
+#!/usr/bin/env Rscript
+
 library(plyr) # - plyr seems to have problems with parallelism
 library(nnet)
 library(caret)
@@ -27,16 +29,16 @@ if (conf$num.cores > 1) {
 # Reshape into a list contaning a vector of labels and a list of matrices for the figures
 reshapeData <- function (df) {
     rv <- list()
-    
+
     if (!is.null(df$label)) {
         rv$labels = df$label
-        
+
         df <- df[, -1]
     }
-    
+
     rows <- sqrt(ncol(df))
     cols <- rows
-        
+
     # transpose data frame (without labels) and extract matrix
     df <- t(df)
     rv$figures <- lapply(seq_len(ncol(df)), function (i) {
@@ -44,7 +46,7 @@ reshapeData <- function (df) {
         dim(figure) <- c(rows, cols)
         return(figure)
     })
-    
+
     return(rv)
 }
 
@@ -53,7 +55,7 @@ trimFigures <- function (figures) {
     # The number of rows and columns
     rows <- NROW(figures[[1]])
     cols <- NCOL(figures[[1]])
-    
+
     # Determine boundaries we can trim to
     boundaries <- ldply(figures, function (figure) {
         # How many pixels to trim off each edge
@@ -72,16 +74,16 @@ trimFigures <- function (figures) {
                 break
             }
         }
-        
+
         return(data.frame(top = top, left = left))
     })
-    
+
     # our boundaries
     left <- min(boundaries$left)
     top <- min(boundaries$top)
     width <- cols - left
     height <- rows - top
-    
+
     # Now trim to the boundaries and pad out bottom and right with zeros
     figures <- lapply(figures, function (figure) {
         new.figure <- rep(0, rows*cols)
@@ -89,7 +91,7 @@ trimFigures <- function (figures) {
         new.figure[1:height, 1:width] <- figure[-(1:top), -(1:left)]
         return(new.figure)
     })
-    
+
     return(figures)
 }
 
@@ -98,20 +100,20 @@ cutFigure <- function (figure, .every = 1) {
     if (.every <= 1) {
         return(figure)
     }
-    
+
     all.rows <- sqrt(NROW(figure))
     all.cols <- all.rows
-    
+
     # cut cells down
     row.cells <- seq(1, all.rows, by = .every)
     col.cells <- seq(1, all.cols, by = .every)
-    
+
     # "keep.columns" is the columns we will keep
     keep.columns <- c()
     for(rc in row.cells) {
         keep.columns <- c(keep.columns, c(col.cells + (((rc[1]-1) * all.cols))))
     }
-        
+
     # cells in a block
     block.size <- .every * .every
     my.cells <- c()
@@ -119,33 +121,33 @@ cutFigure <- function (figure, .every = 1) {
         my.cells <- c(my.cells, (1:.every) + y*all.cols)
     }
     my.cells <- my.cells-1
-            
+
     # Change the value in each interesting cell to the mean of 
     # itself and its neighbours that are to be removed
     for(cell in keep.columns) {
         avg <- sum( figure[my.cells + cell] ) / block.size
         figure[cell] <- avg
     }
-    
+
     figure <- figure[keep.columns]
     figure[is.na(figure)] <- 0
-    
+
     return(figure)
 }
 
 backToDataFrame <- function (dl) {
     rows <- NROW(dl$figures[[1]])
     cols <- NCOL(dl$figures[[2]])
-    
+
     # Convert figures (list of matrices) into huge single vector
     figures <- as.vector(unlist(dl$figures))
-    
+
     # Change to a matrix with the columns as figures (row for each pixel)
     dim(figures) <- c(rows * cols, NROW(dl$figures))
-    
+
     # Transpose matrix so that the figures are in the rows
     figures <- t(figures)
-    
+
     if (is.null(dl$labels)) {
         df <- as.data.frame(figures)
         names(df) <- paste0("pixel", seq(0, NCOL(df)-1))
@@ -155,17 +157,17 @@ backToDataFrame <- function (dl) {
         names(df) <- c("label", paste0("pixel", seq(0, NCOL(df)-2)))
         df$label <- as.factor(df$label)
     }
-    
+
     return(df)
 }
 
 featureEngineering <- function (df, cut.by = conf$cut.pixels, take.log = conf$take.log, do.normalise = conf$do.normalise, do.parallel = FALSE) {
     dl <- reshapeData(df)
-    
+
     dl$figures <- trimFigures(dl$figures)
-    
+
     process <- Identity
-    
+
     if (cut.by > 1) {
         process <- Compose(process, Curry(cutFigure, .every = cut.by))
     }
@@ -175,7 +177,7 @@ featureEngineering <- function (df, cut.by = conf$cut.pixels, take.log = conf$ta
     if (do.normalise) {
         process <- Compose(process, function (vec) vec/max(vec))
     }
-    
+
     if (do.parallel && exists("cl")) {
         dl$figures <- foreach(i = seq_len(length(dl$figures)), .export=c("cutFigure")) %dopar% { process( dl$figures[[i]] ) }
     } else {
@@ -212,7 +214,7 @@ if (conf$model == 'nnet') {
         num.pixels <- NCOL(train.batch)
         hidden.size = floor(min(200, (10 + num.pixels)/2))
         max.weights <- floor(1.5 * num.pixels * hidden.size)
-        
+
         return( function () nnet(
             formula = label ~ .,
             data = train.batch,
@@ -224,7 +226,7 @@ if (conf$model == 'nnet') {
         ))
     })()
     my.predict <- Curry(predict, type="class")
-    
+
 } else if (conf$model == 'train.nnet') {
     my.train <- function () train(form = label ~ .,
                                   data = train.batch,
@@ -233,7 +235,7 @@ if (conf$model == 'nnet') {
                                   tuneGrid = expand.grid(size = floor(seq(NCOL(train.batch)/5, NCOL(train.batch)/2, length.out=4)),
                                                          decay = seq(0, 0.5, length.out = 5)))
     my.predict <- predict
-    
+
 } else if (conf$model == 'train.rf') {
     my.train <- function () train(form = label ~ .,
                                   data = train.batch,
@@ -264,7 +266,7 @@ tryCatch(
 
 if (ratio > bestRatio) {
     printf("Best yet: %.3f\n",  ratio)
-    
+
     # Now run our model against the competition data
     if (!exists("test.data")) {
         load("test.RData")
@@ -273,25 +275,25 @@ if (ratio > bestRatio) {
         test.data <- featureEngineering(test.data)
         print(Sys.time() - start.time)
     }
-    
+
     test.data$Label <- my.predict(object = model, newdata = test.data)
     test.data$ImageId <- 1:nrow(test.data)
-    
+
     suffix <- paste(sep="-", format(Sys.time(), "%Y%m%d-%H%M"), round(ratio, 3))
     fname <- paste0("output/submission-", suffix, ".csv")
-    
+
     write.table(test.data[,c("ImageId", "Label")], file=fname, sep = ",", quote = FALSE, row.names = FALSE, col.names = TRUE)
     gzip(fname, overwrite = TRUE)
-    
+
     # Commit to github repository
     git <- "c:\\cygwin64\\bin\\git.exe"
     system(paste(git, "add", "-u"))
     system(paste(git, "commit", "--allow-empty", "-m", paste0("'submission [ratio=", round(ratio, 3), "]'")))
     system(paste(git, "tag", "-f", paste0("submission-", round(ratio,3))))
-    
+
     bestRatio <- ratio
     save(bestRatio, file="bestRatio.RData")
-    
+
 } else {
     printf("Not an improvement %.3f < %.3f\n", ratio, bestRatio)
 }
