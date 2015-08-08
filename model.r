@@ -1,21 +1,22 @@
 #!/usr/bin/env Rscript
 
-library(plyr) # - plyr seems to have problems with parallelism
-library(nnet)
-library(caret)
-library(R.utils)
-library(foreach)
-library(functional)
-library(parallel)
-library(doParallel)
+library(functional, quietly = TRUE)
+my.library <- Curry(library, quietly = TRUE)
+my.library("plyr") # - plyr seems to have problems with parallelism
+my.library("nnet")
+my.library("caret")
+my.library("R.utils")
+my.library("foreach")
+my.library("parallel")
+my.library("doParallel")
 
 conf <- list(
     seed = 12345,
     num.cores = detectCores(logical = FALSE),
-    num.rows = 20000,
+    num.rows = 0,
     cut.pixels = 2,
-    do.normalise = TRUE,
-    take.log = TRUE,
+    scale = "norm",    # z = subtract mean, divide by std dev, "norm" = divide by max
+    take.log = FALSE,
     model = "nnet"
 )
 
@@ -161,7 +162,11 @@ backToDataFrame <- function (dl) {
     return(df)
 }
 
-featureEngineering <- function (df, cut.by = conf$cut.pixels, take.log = conf$take.log, do.normalise = conf$do.normalise, do.parallel = FALSE) {
+featureEngineering <- function (df,
+                                cut.by = conf$cut.pixels,
+                                take.log = conf$take.log,
+                                scale = conf$scale,
+                                do.parallel = FALSE) {
     dl <- reshapeData(df)
 
     dl$figures <- trimFigures(dl$figures)
@@ -174,7 +179,9 @@ featureEngineering <- function (df, cut.by = conf$cut.pixels, take.log = conf$ta
     if (take.log) {
         process <- Compose(process, log1p)
     }
-    if (do.normalise) {
+    if (scale == "z") {
+        process <- Compose(process, function (vec) (vec - mean(vec) / sd(vec)))
+    } else if (scale == "norm") {
         process <- Compose(process, function (vec) vec/max(vec))
     }
 
@@ -190,10 +197,14 @@ featureEngineering <- function (df, cut.by = conf$cut.pixels, take.log = conf$ta
 
 load("train.RData")
 
-# Cut data down to a "reasonable size"
-cut.partition <- createDataPartition(train.data$label, p = conf$num.rows/NROW(train.data), list = FALSE)
-train.data <- train.data[cut.partition, ]
-rm(cut.partition)
+if (!is.null(conf$num.rows) && conf$num.rows > 0) {
+    # Cut data down to a "reasonable size"
+    cut.partition <- createDataPartition(train.data$label,
+                                         p = conf$num.rows/NROW(train.data),
+                                         list = FALSE)
+    train.data <- train.data[cut.partition, ]
+    rm(cut.partition)
+}
 
 # Takes 4.5 seconds to massage 10,000 figures into 7x7 (used to be 10 minutes!)
 print("Massaging data...")
@@ -215,14 +226,16 @@ if (conf$model == 'nnet') {
         hidden.size = floor(min(200, (10 + num.pixels)/2))
         max.weights <- floor(1.5 * num.pixels * hidden.size)
 
+        printf("Hidden layer size %d\n", hidden.size)
+
         return( function () nnet(
             formula = label ~ .,
             data = train.batch,
-            maxit = 400,
+            maxit = 500,
             size = hidden.size,
             MaxNWts = max.weights,
             decay = 0.01 / hidden.size,
-            reltol = 0.000001
+            reltol = 0.0000001
         ))
     })()
     my.predict <- Curry(predict, type="class")
@@ -286,7 +299,8 @@ if (ratio > bestRatio) {
     gzip(fname, overwrite = TRUE)
 
     # Commit to github repository
-    git <- "c:\\cygwin64\\bin\\git.exe"
+    # git <- "c:\\cygwin64\\bin\\git.exe"
+    git <- "git"
     system(paste(git, "add", "-u"))
     system(paste(git, "commit", "--allow-empty", "-m", paste0("'submission [ratio=", round(ratio, 3), "]'")))
     system(paste(git, "tag", "-f", paste0("submission-", round(ratio,3))))
